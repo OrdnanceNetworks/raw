@@ -42,6 +42,7 @@ type socket interface {
 	Close() error
 	FD() int
 	Recvfrom([]byte, int) (int, syscall.Sockaddr, error)
+	Recvmsg([]byte, []byte, int) (int, int, int, syscall.Sockaddr, error)
 	Sendto([]byte, int, syscall.Sockaddr) error
 	SetNonblock(bool) error
 	SetSockopt(level, name int, v unsafe.Pointer, l uint32) error
@@ -181,6 +182,86 @@ func (p *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	}, nil
 }
 
+// ReadMsg
+func (p *packetConn) ReadMsg(b, oob []byte) (int, int, int, net.Addr, error) {
+	// Set up deadline context if needed, if a read timeout is set
+	ctx, cancel := context.TODO(), func() {}
+	p.timeoutMu.RLock()
+	if p.rtimeout.After(time.Now()) {
+		ctx, cancel = context.WithDeadline(context.Background(), p.rtimeout)
+	}
+	p.timeoutMu.RUnlock()
+
+	// Information returned by syscall.Recvfrom
+	var n int
+	var oobn int
+	var flags int
+	var addr syscall.Sockaddr
+	var err error
+
+	for {
+		// Continue looping, or if deadline is set and has expired, return
+		// an error
+		select {
+		case <-ctx.Done():
+			// We only know how to handle deadline exceeded, so return any
+			// other errors for the caller to deal with
+			if err := ctx.Err(); err != context.DeadlineExceeded {
+				return n, oobn, flags, nil, err
+			}
+
+			// Return standard net.OpError so caller can detect timeouts and retry
+			return n, oobn, flags, nil, &net.OpError{
+				Op:   "read",
+				Net:  "raw",
+				Addr: nil,
+				Err:  &timeoutError{},
+			}
+		default:
+			// Not timed out, keep trying
+		}
+
+		// Attempt to receive on socket
+		n, oobn, flags, addr, err = p.s.Recvmsg(b, oob, 0)
+		if err != nil {
+			n = 0
+
+			// EAGAIN is returned when no data is available for non-blocking
+			// I/O, so keep trying after a short delay
+			if err == syscall.EAGAIN {
+				p.sleeper.Sleep(2 * time.Millisecond)
+				continue
+			}
+
+			// Return other errors
+			return n, oobn, flags, nil, err
+		}
+
+		// Got data, cancel the deadline
+		cancel()
+		break
+	}
+
+	// Retrieve hardware address and other information from addr
+	sa, ok := addr.(*syscall.SockaddrLinklayer)
+	if !ok || sa.Halen < 6 {
+		return n, oobn, flags, nil, syscall.EINVAL
+	}
+
+	// Use length specified to convert byte array into a hardware address slice
+	mac := make(net.HardwareAddr, sa.Halen)
+	copy(mac, sa.Addr[:])
+
+	// packet(7):
+	//   sll_hatype and sll_pkttype are set on received packets for your
+	//   information.
+	// TODO(mdlayher): determine if similar fields exist and are useful on
+	// non-Linux platforms
+	return n, oobn, flags, &Addr{
+		HardwareAddr: mac,
+	}, nil
+}
+
 // WriteTo implements the net.PacketConn.WriteTo method.
 func (p *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	// Ensure correct Addr type
@@ -297,6 +378,11 @@ func (p *packetConn) SetPromiscuous(b bool) error {
 	return p.s.SetSockopt(unix.SOL_PACKET, membership, unsafe.Pointer(&mreq), unix.SizeofPacketMreq)
 }
 
+func (p *packetConn) SetPacketAuxdata() error {
+	val := 1
+	return unix.SetsockoptInt(p.s.FD(), unix.SOL_PACKET, unix.PACKET_AUXDATA, val)
+}
+
 // sysSocket is the default socket implementation.  It makes use of
 // Linux-specific system calls to handle raw socket functionality.
 type sysSocket struct {
@@ -310,6 +396,9 @@ func (s *sysSocket) Close() error                   { return syscall.Close(s.fd)
 func (s *sysSocket) FD() int                        { return s.fd }
 func (s *sysSocket) Recvfrom(p []byte, flags int) (int, syscall.Sockaddr, error) {
 	return syscall.Recvfrom(s.fd, p, flags)
+}
+func (s *sysSocket) Recvmsg(p, oob []byte, flags int) (int, int, int, syscall.Sockaddr, error) {
+	return syscall.Recvmsg(s.fd, p, oob, flags)
 }
 func (s *sysSocket) Sendto(p []byte, flags int, to syscall.Sockaddr) error {
 	return syscall.Sendto(s.fd, p, flags, to)

@@ -510,10 +510,13 @@ func (t *testSleeper) Sleep(d time.Duration) {
 // the basis for more specific socket implementations.
 type noopSocket struct{}
 
-func (noopSocket) Bind(sa syscall.Sockaddr) error                               { return nil }
-func (noopSocket) Close() error                                                 { return nil }
-func (noopSocket) FD() int                                                      { return 0 }
-func (noopSocket) Recvfrom(p []byte, flags int) (int, syscall.Sockaddr, error)  { return 0, nil, nil }
+func (noopSocket) Bind(sa syscall.Sockaddr) error                              { return nil }
+func (noopSocket) Close() error                                                { return nil }
+func (noopSocket) FD() int                                                     { return 0 }
+func (noopSocket) Recvfrom(p []byte, flags int) (int, syscall.Sockaddr, error) { return 0, nil, nil }
+func (noopSocket) Recvmsg(p, oob []byte, flags int) (int, int, int, syscall.Sockaddr, error) {
+	return 0, 0, 0, nil, nil
+}
 func (noopSocket) Sendto(p []byte, flags int, to syscall.Sockaddr) error        { return nil }
 func (noopSocket) SetNonblock(nonblocking bool) error                           { return nil }
 func (noopSocket) SetSockopt(level, name int, v unsafe.Pointer, l uint32) error { return nil }

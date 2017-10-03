@@ -60,6 +60,10 @@ func (c *Conn) ReadFrom(b []byte) (int, net.Addr, error) {
 	return c.p.ReadFrom(b)
 }
 
+func (c *Conn) ReadMsg(b, oob []byte) (int, int, int, net.Addr, error) {
+	return c.p.ReadMsg(b, oob)
+}
+
 // WriteTo implements the net.PacketConn WriteTo method.
 func (c *Conn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return c.p.WriteTo(b, addr)
@@ -101,6 +105,10 @@ func (c *Conn) SetBPF(filter []bpf.RawInstruction) error {
 // to receive traffic that is not addressed to the interface.
 func (c *Conn) SetPromiscuous(b bool) error {
 	return c.p.SetPromiscuous(b)
+}
+
+func (c *Conn) SetPacketAuxdata() error {
+	return c.p.SetPacketAuxdata()
 }
 
 // A Protocol is a network protocol constant which identifies the type of
